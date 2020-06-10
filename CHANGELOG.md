@@ -4,6 +4,132 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.9.5] 2020-06-07
+### Features
+- new custom action (**+**) to open the system backups (snapshots). It is just a shortcut to Timeshift.
+    <p align="center">
+        <img src="https://raw.githubusercontent.com/vinifmor/bauh/staging/pictures/releases/0.9.5/backup_action.png">
+    </p>
+
+### Improvements
+- Arch
+    - new **automatch_providers** settings: bauh will automatically choose which provider will be used for a package dependency when both names are equal (enabled by default).
+    <p align="center">
+        <img src="https://raw.githubusercontent.com/vinifmor/bauh/staging/pictures/releases/0.9.5/arch_providers.png">
+    </p>
+
+- UI
+    - not limiting the name filter size
+    - rendering package icons with no full paths declared
+    - refreshing custom actions (**+**) after installing/uninstalling/downgrading/upgrading packages
+    - minor improvements
+- download clients parameters
+
+### Fixes
+- regressions (from **0.9.4**)
+    - resetting the main configuration when tray mode is active [#118](https://github.com/vinifmor/bauh/issues/118)
+    - bauh-cli crashing
+    - tray mode not publishing update notifications
+    - Arch: not checking if **pacman-mirrors** is available before starting to download repository packages (when multi-threaded download is enabled) [#117](https://github.com/vinifmor/bauh/issues/117)
+- Arch
+    - uninstall: not checking if there are other installed providers for the target package
+    - not recursively asking for dependencies providers when installing / upgrading / downgrading
+    - not displaying "removing" substatus during the upgrade process
+- UI
+    - table overwrite effect when updating its content
+
+### i18n contributions
+
+- Turkish (tr): [tulliana](https://github.com/tulliana)
+
+
+## [0.9.4] 2020-05-29
+
+### Features
+- Ignore updates: now it is possible to ignore updates from software packages through their actions button (**+**). Supported types: Arch packages, Flatpaks and AppImages
+
+    <p align="center">
+        <img src="https://raw.githubusercontent.com/vinifmor/bauh/staging/pictures/releases/0.9.4/ignore_updates.png">
+    </p>
+    <p align="center">
+        <img src="https://raw.githubusercontent.com/vinifmor/bauh/staging/pictures/releases/0.9.4/revert_ignored_updates.png">
+    </p>
+- Packages with ignored updates have their versions displayed with a brown shade
+    <p align="center">
+        <img src="https://raw.githubusercontent.com/vinifmor/bauh/staging/pictures/releases/0.9.4/version_ignored_updates.png">
+    </p>
+- It is possible to filter all you packages with updates ignored through the new category **Updates ignored**
+    <p align="center">
+        <img src="https://raw.githubusercontent.com/vinifmor/bauh/staging/pictures/releases/0.9.4/updates_ignored_category.png">
+    </p>
+    
+- Arch
+	- supporting multi-threaded download for repository packages (enabled by default)
+    <p align="center">
+        <img src="https://raw.githubusercontent.com/vinifmor/bauh/staging/pictures/releases/0.9.4/arch_repo_mthread.png">
+    </p>
+
+- Settings
+    - [axel](https://github.com/axel-download-accelerator/axel) added as an alternative multi-threaded download tool. The download tool can be defined through the new field **Multi-threaded download tool** on the settings window **Advanced** tab (check **Default** for bauh to decide which one to use)
+    <p align="center">
+        <img src="https://raw.githubusercontent.com/vinifmor/bauh/staging/pictures/releases/0.9.4/mthread_tool.png">
+    </p>
+
+
+
+### Improvements
+- Arch
+    - faster caching data process during initialization
+    - i18n
+- AppImage
+    - Categories are now translated on the Info window
+    
+- UI
+    - only centralizing the apps table after the initialization process
+    - defining a minimum width and height based on the screen size
+    - info window now has a height limit, a lower bar with Back and Close buttons, and is scrollable
+    - minor changes
+- Downloads
+    - retrieving the downloading file sizes asynchronously
+
+### Fixes
+- Flatpak
+    - not displaying application updates on the search results
+- Arch
+    - crashing while reading the installed packages when the internet is unstable
+
+- initialization dialog hangs when there is no task to wait for [#112](https://github.com/vinifmor/bauh/issues/112)
+- not caching data of installed packages with no signatures and unknown repositories
+
+
+## [0.9.3] 2020-05-12
+### Features
+- new **restore** action to restore all bauh settings and cache through the 'custom actions' button (**+**). It is equivalent to the command `bauh --reset`.
+
+### Improvements
+- some custom actions not related to installed packages state will not refresh the table after succeeded
+
+### Fixes
+- Arch
+    - "clean cache" operation was not working in some scenarios
+    - upgrading progress when conflicting files are detected
+    - not detecting some installed "not-signed" repository packages
+    - not properly caching data of installed dependencies
+- UI
+    - some fields in the table are overlapped by others when maximized [#107](https://github.com/vinifmor/bauh/issues/107)
+    
+- upgrade: crashing when there are packages to be displayed on the summary window that cannot upgrade
+- settings: crashing when an empty Qt style is detected or defined [#104](https://github.com/vinifmor/bauh/issues/104)
+
+
+### Recommendations
+- Arch-based distro users: clean the bauh's Arch cache after upgrading to this release so it will remap all installed packages during the next initialization. 3 possible ways to do it:
+
+    - type on the command line: `rm -rf ~/.cache/bauh/arch/installed` (it will reset only the Arch cache)
+    - type on the command line: `bauh --reset` (it will reset all caches and settings)
+    - click on the new **Restore** custom action on the UI (it will reset all caches and settings)
+
+
 ## [0.9.2] 2020-05-04
 ### Features
 - UI

@@ -18,15 +18,15 @@ def request_optional_deps(pkgname: str, pkg_repos: dict, watcher: ProcessWatcher
     opts = []
 
     repo_deps = [p for p, data in pkg_repos.items() if data['repository'] != 'aur']
-    sizes = pacman.get_update_size(repo_deps) if repo_deps else {}
+    sizes = pacman.map_update_sizes(repo_deps) if repo_deps else {}
 
     for p, d in pkg_repos.items():
         size = sizes.get(p)
-        op = InputOption('{}{} ( {}: {} ) - {}: {}'.format(p, ': ' + d['desc'] if d['desc'] else '',
-                                                           i18n['repository'],
-                                                           d['repository'].upper(),
-                                                           i18n['size'].capitalize(),
-                                                           get_human_size_str(size) if size else '?'), p)
+        op = InputOption('{}{} ({}: {}) - {}: {}'.format(p, ': ' + d['desc'] if d['desc'] else '',
+                                                         i18n['repository'],
+                                                         d['repository'].lower(),
+                                                         i18n['size'].capitalize(),
+                                                         get_human_size_str(size) if size else '?'), p)
         op.icon_path = _get_repo_icon(d['repository'])
         opts.append(op)
 
@@ -50,15 +50,15 @@ def request_install_missing_deps(pkgname: str, deps: List[Tuple[str, str]], watc
     opts = []
 
     repo_deps = [d[0] for d in deps if d[1] != 'aur']
-    sizes = pacman.get_update_size(repo_deps) if repo_deps else {}
+    sizes = pacman.map_update_sizes(repo_deps) if repo_deps else {}
 
     for dep in deps:
         size = sizes.get(dep[0])
-        op = InputOption('{} ( {}: {} ) - {}: {}'.format(dep[0],
-                                                         i18n['repository'],
-                                                         dep[1].upper(),
-                                                         i18n['size'].capitalize(),
-                                                         get_human_size_str(size) if size else '?'), dep[0])
+        op = InputOption('{} ({}: {}) - {}: {}'.format(dep[0],
+                                                       i18n['repository'],
+                                                       dep[1].lower(),
+                                                       i18n['size'].capitalize(),
+                                                       get_human_size_str(size) if size else '?'), dep[0])
         op.read_only = True
         op.icon_path = _get_repo_icon(dep[1])
         opts.append(op)

@@ -3,6 +3,7 @@ import re
 from threading import Thread
 from typing import List, Set, Tuple, Dict, Iterable
 
+from bauh.commons import system
 from bauh.commons.system import run_cmd, new_subprocess, new_root_subprocess, SystemProcess, SimpleProcess, \
     ProcessHandler
 from bauh.commons.util import size_to_byte
@@ -14,8 +15,10 @@ RE_DEP_NOTFOUND = re.compile(r'error:.+\'(.+)\'')
 RE_DEP_OPERATORS = re.compile(r'[<>=]')
 RE_INSTALLED_FIELDS = re.compile(r'(Name|Description|Version|Validated By)\s*:\s*(.+)')
 RE_INSTALLED_SIZE = re.compile(r'Installed Size\s*:\s*([0-9,\.]+)\s(\w+)\n?', re.IGNORECASE)
+RE_DOWNLOAD_SIZE = re.compile(r'Download Size\s*:\s*([0-9,\.]+)\s(\w+)\n?', re.IGNORECASE)
 RE_UPDATE_REQUIRED_FIELDS = re.compile(r'(\bProvides\b|\bInstalled Size\b|\bConflicts With\b)\s*:\s(.+)\n')
 RE_REMOVE_TRANSITIVE_DEPS = re.compile(r'removing\s([\w\-_]+)\s.+required\sby\s([\w\-_]+)\n?')
+RE_AVAILABLE_MIRRORS = re.compile(r'.+\s+OK\s+.+\s+(\d+:\d+)\s+.+(http.+)')
 
 
 def is_available() -> bool:
@@ -53,7 +56,7 @@ def is_available_in_repositories(pkg_name: str) -> bool:
 
 
 def get_info(pkg_name, remote: bool = False) -> str:
-    return run_cmd('pacman -{}i {}'.format('Q' if not remote else 'S', pkg_name))
+    return run_cmd('pacman -{}i {}'.format('Q' if not remote else 'S', pkg_name), print_error=False)
 
 
 def get_info_list(pkg_name: str, remote: bool = False) -> List[tuple]:
@@ -92,12 +95,12 @@ def _fill_ignored(res: dict):
     res['pkgs'] = list_ignored_packages()
 
 
-def map_installed(repositories: bool = True, aur: bool = True) -> dict:  # returns a dict with with package names as keys and versions as values
+def map_installed(names: Iterable[str] = None) -> dict:  # returns a dict with with package names as keys and versions as values
     ignored = {}
     thread_ignored = Thread(target=_fill_ignored, args=(ignored,), daemon=True)
     thread_ignored.start()
 
-    allinfo = run_cmd('pacman -Qi')
+    allinfo = run_cmd('pacman -Qi{}'.format(' ' + ' '.join(names) if names else ''))
 
     pkgs = {'signed': {}, 'not_signed': {}}
     current_pkg = {}
@@ -109,10 +112,10 @@ def map_installed(repositories: bool = True, aur: bool = True) -> dict:  # retur
         elif field_tuple[0].startswith('D'):
             current_pkg['description'] = field_tuple[1].strip()
         elif field_tuple[0].startswith('Va'):
-            if field_tuple[1].strip().lower() == 'none' and aur:
+            if field_tuple[1].strip().lower() == 'none':
                 pkgs['not_signed'][current_pkg['name']] = current_pkg
                 del current_pkg['name']
-            elif repositories:
+            else:
                 pkgs['signed'][current_pkg['name']] = current_pkg
                 del current_pkg['name']
 
@@ -432,7 +435,7 @@ def get_build_date(pkgname: str) -> str:
 
 
 def search(words: str) -> Dict[str, dict]:
-    output = run_cmd('pacman -Ss ' + words)
+    output = run_cmd('pacman -Ss ' + words, print_error=False)
 
     if output:
         found, current = {}, {}
@@ -503,11 +506,20 @@ def is_mirrors_available() -> bool:
     return bool(run_cmd('which pacman-mirrors', print_error=False))
 
 
-def get_update_size(pkgs: List[str]) -> Dict[str, int]:  # bytes:
+def map_update_sizes(pkgs: List[str]) -> Dict[str, int]:  # bytes:
     output = run_cmd('pacman -Si {}'.format(' '.join(pkgs)))
 
     if output:
         return {pkgs[idx]: size_to_byte(float(size[0]), size[1]) for idx, size in enumerate(RE_INSTALLED_SIZE.findall(output))}
+
+    return {}
+
+
+def map_download_sizes(pkgs: List[str]) -> Dict[str, int]:  # bytes:
+    output = run_cmd('pacman -Si {}'.format(' '.join(pkgs)))
+
+    if output:
+        return {pkgs[idx]: size_to_byte(float(size[0]), size[1]) for idx, size in enumerate(RE_DOWNLOAD_SIZE.findall(output))}
 
     return {}
 
@@ -599,6 +611,36 @@ def map_provided(remote: bool = False, pkgs: Iterable[str] = None) -> Dict[str, 
         return provided_map
 
 
+def list_download_data(pkgs: Iterable[str]) -> List[Dict[str, str]]:
+    _, output = system.run(['pacman', '-Si', *pkgs])
+
+    if output:
+        res = []
+        data = {'a': None, 'v': None, 'r': None, 'n': None}
+
+        for l in output.split('\n'):
+            if l:
+                if l[0] != ' ':
+                    line = l.strip()
+                    field_sep_idx = line.index(':')
+                    field = line[0:field_sep_idx].strip()
+                    val = line[field_sep_idx + 1:].strip()
+
+                    if field == 'Repository':
+                        data['r'] = val
+                    elif field == 'Name':
+                        data['n'] = val
+                    elif field == 'Version':
+                        data['v'] = val.split('=')[0]
+                    elif field == 'Architecture':
+                        data['a'] = val
+                    elif data.get('a'):
+                        res.append(data)
+                        data = {'a': None, 'v': None, 'r': None, 'n': None}
+
+        return res
+
+
 def map_updates_data(pkgs: Iterable[str], files: bool = False) -> dict:
     if files:
         output = run_cmd('pacman -Qi -p {}'.format(' '.join(pkgs)))
@@ -687,10 +729,6 @@ def map_updates_data(pkgs: Iterable[str], files: bool = False) -> dict:
                         data[latest_field].update((w.strip() for w in l.split(' ') if w))
 
         return res
-
-
-def list_installed_names() -> Set[str]:
-    return {p for p in run_cmd('pacman -Qq').split('\n') if p}
 
 
 def upgrade_several(pkgnames: Iterable[str], root_password: str, overwrite_conflicting_files: bool = False) -> SimpleProcess:
@@ -838,7 +876,13 @@ def get_cache_dir() -> str:
             if not string.strip().startswith('#'):
                 cache_dirs.append(string.split('=')[1].strip())
 
-        return cache_dirs[-1] if cache_dirs else '/var/cache/pacman/pkg/'
+        if cache_dirs:
+            if cache_dirs[-1][-1] == '/':
+                return cache_dirs[-1][0:-1]
+            else:
+                return cache_dirs[-1]
+        else:
+            return '/var/cache/pacman/pkg'
 
 
 def map_required_by(names: Iterable[str]) -> Dict[str, Set[str]]:
@@ -1013,3 +1057,25 @@ def list_unnecessary_deps(pkgs: Iterable[str], all_provided: Dict[str, Set[str]]
                         unnecessary.add(dep)
 
     return unnecessary.difference(pkgs)
+
+
+def list_installed_names() -> Set[str]:
+    output = run_cmd('pacman -Qq', print_error=False)
+    return {name.strip() for name in output.split('\n') if name} if output else set()
+
+
+def list_available_mirrors() -> List[str]:
+    _, output = system.run(['pacman-mirrors', '--status', '--no-color'])
+
+    if output:
+        mirrors = RE_AVAILABLE_MIRRORS.findall(output)
+
+        if mirrors:
+            mirrors.sort(key=lambda o: o[0])
+            return [m[1] for m in mirrors]
+
+
+def get_mirrors_branch() -> str:
+    _, output = system.run(['pacman-mirrors', '-G'])
+    return output.strip()
+

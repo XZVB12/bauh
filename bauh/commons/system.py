@@ -63,7 +63,7 @@ class SystemProcess:
 
 class SimpleProcess:
 
-    def __init__(self, cmd: List[str], cwd: str = '.', expected_code: int = None,
+    def __init__(self, cmd: List[str], cwd: str = '.', expected_code: int = 0,
                  global_interpreter: bool = USE_GLOBAL_INTERPRETER, lang: str = DEFAULT_LANG, root_password: str = None,
                  extra_paths: Set[str] = None, error_phrases: Set[str] = None):
         pwdin, final_cmd = None, []
@@ -179,7 +179,7 @@ class ProcessHandler:
         proc.instance.wait()
         output.seek(0)
 
-        success = proc.instance.returncode == proc.expected_code,
+        success = proc.instance.returncode == proc.expected_code
         string_output = output.read()
 
         if proc.error_phrases:
@@ -272,3 +272,8 @@ def get_human_size_str(size) -> str:
         if len(size_str.split('.')[0]) < 4:
             return '{0:.2f}'.format(float(size_str)) + ' ' + m[1]
     return str(int_size)
+
+
+def run(cmd: List[str], success_code: int = 0) -> Tuple[bool, str]:
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return p.returncode == success_code, p.stdout.decode()

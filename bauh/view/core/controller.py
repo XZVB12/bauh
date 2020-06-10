@@ -2,6 +2,7 @@ import re
 import re
 import time
 import traceback
+from subprocess import Popen, STDOUT
 from threading import Thread
 from typing import List, Set, Type, Tuple, Dict
 
@@ -11,11 +12,16 @@ from bauh.api.abstract.disk import DiskCacheLoader
 from bauh.api.abstract.handler import ProcessWatcher, TaskManager
 from bauh.api.abstract.model import SoftwarePackage, PackageUpdate, PackageHistory, PackageSuggestion, \
     CustomSoftwareAction
-from bauh.api.abstract.view import ViewComponent, TabGroupComponent
+from bauh.api.abstract.view import ViewComponent, TabGroupComponent, MessageType
 from bauh.api.exception import NoInternetException
 from bauh.commons import internet
+from bauh.commons.html import bold
+from bauh.commons.system import run_cmd
+from bauh.view.core.config import read_config
 from bauh.view.core.settings import GenericSettingsManager
 from bauh.view.core.update import check_for_update
+from bauh.view.util import resource
+from bauh.view.util.util import clean_app_files, restart_app
 
 RE_IS_URL = re.compile(r'^https?://.+')
 
@@ -47,11 +53,48 @@ class GenericSoftwareManager(SoftwareManager):
         self.config = config
         self.settings_manager = settings_manager
         self.http_client = context.http_client
+        self.extra_actions = [CustomSoftwareAction(i18_label_key='action.reset',
+                                                   i18n_status_key='action.reset.status',
+                                                   manager_method='reset',
+                                                   manager=self,
+                                                   icon_path=resource.get_path('img/logo.svg'),
+                                                   requires_root=False,
+                                                   refresh=False)]
+        self.dynamic_extra_actions = {CustomSoftwareAction(i18_label_key='action.backups',
+                                                           i18n_status_key='action.backups.status',
+                                                           manager_method='launch_timeshift',
+                                                           manager=self,
+                                                           icon_path='timeshift',
+                                                           requires_root=False,
+                                                           refresh=False): self.is_backups_action_available}
+
+    def _is_timeshift_launcher_available(self) -> bool:
+        return bool(run_cmd('which timeshift-launcher', print_error=False))
+
+    def is_backups_action_available(self, app_config: dict) -> bool:
+        return bool(app_config['backup']['enabled']) and self._is_timeshift_launcher_available()
 
     def reset_cache(self):
         if self._available_cache is not None:
             self._available_cache = {}
             self.working_managers.clear()
+
+    def launch_timeshift(self, root_password: str, watcher: ProcessWatcher):
+        if self._is_timeshift_launcher_available():
+            try:
+                Popen(['timeshift-launcher'], stderr=STDOUT)
+                return True
+            except:
+                traceback.print_exc()
+                watcher.show_message(title=self.i18n["error"].capitalize(),
+                                     body=self.i18n['action.backups.tool_error'].format(bold('Timeshift')),
+                                     type_=MessageType.ERROR)
+                return False
+        else:
+            watcher.show_message(title=self.i18n["error"].capitalize(),
+                                 body=self.i18n['action.backups.tool_error'].format(bold('Timeshift')),
+                                 type_=MessageType.ERROR)
+            return False
 
     def _sort(self, apps: List[SoftwarePackage], word: str) -> List[SoftwarePackage]:
 
@@ -202,6 +245,14 @@ class GenericSoftwareManager(SoftwareManager):
         if disk_loader:
             disk_loader.stop_working()
             disk_loader.join()
+
+        if res.installed:
+            for p in res.installed:
+                if p.is_update_ignored():
+                    if p.categories is None:
+                        p.categories = ['updates_ignored']
+                    elif 'updates_ignored' not in p.categories:
+                        p.categories.append('updates_ignored')
 
         tf = time.time()
         self.logger.info('Took {0:.2f} seconds'.format(tf - ti))
@@ -414,7 +465,8 @@ class GenericSoftwareManager(SoftwareManager):
             self.settings_manager = GenericSettingsManager(managers=self.managers,
                                                            working_managers=self.working_managers,
                                                            logger=self.logger,
-                                                           i18n=self.i18n)
+                                                           i18n=self.i18n,
+                                                           file_downloader=self.context.file_downloader)
         else:
             self.settings_manager.managers = self.managers
             self.settings_manager.working_managers = self.working_managers
@@ -473,10 +525,25 @@ class GenericSoftwareManager(SoftwareManager):
 
         return res
 
-    def get_custom_actions(self) -> List[CustomSoftwareAction]:
-        if self.managers:
-            actions = []
+    def reset(self, root_password: str, watcher: ProcessWatcher) -> bool:
+        body = '<p>{}</p><p>{}</p>'.format(self.i18n['action.reset.body_1'].format(bold(self.context.app_name)),
+                                           self.i18n['action.reset.body_2'])
+        if watcher.request_confirmation(title=self.i18n['action.reset'],
+                                        body=body,
+                                        confirmation_label=self.i18n['proceed'].capitalize(),
+                                        deny_label=self.i18n['cancel'].capitalize()):
 
+            try:
+                clean_app_files(managers=self.managers, logs=False)
+                restart_app()
+            except:
+                return False
+
+        return True
+
+    def get_custom_actions(self) -> List[CustomSoftwareAction]:
+        actions = []
+        if self.managers:
             working_managers = []
 
             for man in self.managers:
@@ -492,7 +559,15 @@ class GenericSoftwareManager(SoftwareManager):
                     if man_actions:
                         actions.extend(man_actions)
 
-            return actions
+        app_config = read_config()
+
+        for action, available in self.dynamic_extra_actions.items():
+            if available(app_config):
+                actions.append(action)
+
+        actions.extend(self.extra_actions)
+
+        return actions
 
     def _fill_sizes(self, man: SoftwareManager, pkgs: List[SoftwarePackage]):
         ti = time.time()
@@ -513,3 +588,24 @@ class GenericSoftwareManager(SoftwareManager):
 
             for t in threads:
                 t.join()
+
+    def ignore_update(self, pkg: SoftwarePackage):
+        manager = self._get_manager_for(pkg)
+
+        if manager:
+            manager.ignore_update(pkg)
+
+            if pkg.is_update_ignored():
+                if pkg.categories is None:
+                    pkg.categories = ['updates_ignored']
+                elif 'updates_ignored' not in pkg.categories:
+                    pkg.categories.append('updates_ignored')
+
+    def revert_ignored_update(self, pkg: SoftwarePackage):
+        manager = self._get_manager_for(pkg)
+
+        if manager:
+            manager.revert_ignored_update(pkg)
+
+            if not pkg.is_update_ignored() and pkg.categories and 'updates_ignored' in pkg.categories:
+                pkg.categories.remove('updates_ignored')
