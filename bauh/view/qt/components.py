@@ -1,23 +1,262 @@
 import os
-import time
 import traceback
 from pathlib import Path
-from threading import Thread
-from typing import Tuple
+from typing import Tuple, Dict, Optional, Set
 
-from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtCore import Qt, QSize, QTimer
 from PyQt5.QtGui import QIcon, QPixmap, QIntValidator, QCursor
 from PyQt5.QtWidgets import QRadioButton, QGroupBox, QCheckBox, QComboBox, QGridLayout, QWidget, \
     QLabel, QSizePolicy, QLineEdit, QToolButton, QHBoxLayout, QFormLayout, QFileDialog, QTabWidget, QVBoxLayout, \
-    QSlider, QScrollArea, QFrame
+    QSlider, QScrollArea, QFrame, QAction, QSpinBox, QPlainTextEdit
 
 from bauh.api.abstract.view import SingleSelectComponent, InputOption, MultipleSelectComponent, SelectViewType, \
     TextInputComponent, FormComponent, FileChooserComponent, ViewComponent, TabGroupComponent, PanelComponent, \
-    TwoStateButtonComponent, TextComponent, SpacerComponent
+    TwoStateButtonComponent, TextComponent, SpacerComponent, RangeInputComponent, ViewObserver, TextInputType
 from bauh.view.qt import css
 from bauh.view.qt.colors import RED
 from bauh.view.util import resource
 from bauh.view.util.translation import I18n
+
+
+class QtComponentsManager:
+
+    def __init__(self):
+        self.components = {}
+        self.groups = {}
+        self.group_of_groups = {}
+        self._saved_states = {}
+
+    def register_component(self, component_id: int, instance: QWidget, action: QAction = None):
+        comp = (instance, action, {'v': True, 'e': True, 'r': False})
+        self.components[component_id] = comp
+        self._save_state(comp)
+
+    def register_group(self, group_id: int, subgroups: bool, *ids: int):
+        if not subgroups:
+            self.groups[group_id] = {*ids}
+        else:
+            self.group_of_groups[group_id] = {*ids}
+
+    def get_subgroups(self, root_group: int) -> Set[str]:
+        return self.group_of_groups.get(root_group, set())
+
+    def set_components_visible(self, visible: bool, *ids: int):
+        if ids:
+            for cid in ids:
+                self.set_component_visible(cid, visible)
+        else:
+            for cid in self.components:
+                self.set_component_visible(cid, visible)
+
+    def set_component_visible(self, cid: int, visible: bool):
+        comp = self.components.get(cid)
+        if comp and self._is_visible(comp) != visible:
+            self._save_state(comp)
+            self._set_visible(comp, visible)
+
+    def set_component_enabled(self, cid: int, enabled: bool):
+        comp = self.components.get(cid)
+        if comp and self._is_enabled(comp) != enabled:
+            self._save_state(comp)
+            self._set_enabled(comp, enabled)
+
+    def set_component_read_only(self, cid: int, read_only: bool):
+        comp = self.components.get(cid)
+        if comp and self._supports_read_only(comp) and self._is_read_only(comp) != read_only:
+            self._save_state(comp)
+            self._set_read_only(comp, read_only)
+
+    def set_components_enabled(self, enabled: bool, *ids: int):
+        if ids:
+            for cid in ids:
+                self.set_component_enabled(cid, enabled)
+        else:
+            for cid in self.components:
+                self.set_component_enabled(cid, enabled)
+
+    def restore_previous_states(self, *ids: int):
+        if ids:
+            for cid in ids:
+                self.restore_previous_state(cid)
+        else:
+            for cid in self.components:
+                self.restore_previous_state(cid)
+
+    def restore_previous_group_state(self, group_id: int):
+        ids = self.groups.get(group_id)
+
+        if ids:
+            self.restore_previous_states(*ids)
+
+    def restore_previous_groups_states(self, *groups: int):
+        if groups:
+            for group in groups:
+                self.restore_previous_group_state(group)
+
+    def set_group_visible(self, group_id: int, visible: bool):
+        ids = self.groups.get(group_id)
+
+        if ids:
+            self.set_components_visible(visible, *ids)
+
+    def set_groups_visible(self, visible: bool, *groups: int):
+        if groups:
+            for group in groups:
+                self.set_group_visible(group, visible)
+
+    def set_group_enabled(self, group_id: int, enabled: bool):
+        ids = self.groups.get(group_id)
+
+        if ids:
+            self.set_components_enabled(enabled, *ids)
+
+    def restore_previous_state(self, cid: int):
+        comp = self.components.get(cid)
+
+        if comp:
+            previous_state = {**comp[2]}
+            self._restore_state(comp, previous_state)
+
+    def _set_visible(self, comp: Tuple[QWidget, Optional[QAction], Dict[str, bool]], visible: bool):
+        if comp[1]:
+            comp[1].setVisible(visible)
+        else:
+            comp[0].setVisible(visible)
+
+    def _set_enabled(self, comp: Tuple[QWidget, Optional[QAction], Dict[str, bool]], enabled: bool):
+        comp[0].setEnabled(enabled)
+
+    def _set_read_only(self, comp: Tuple[QWidget, Optional[QAction], Dict[str, bool]], read_only: bool):
+        comp[0].setReadOnly(read_only)
+
+    def _supports_read_only(self, comp: Tuple[QWidget, Optional[QAction], Dict[str, bool]]) -> bool:
+        return isinstance(comp, QLineEdit)
+
+    def is_visible(self, cid: int) -> bool:
+        comp = self.components.get(cid)
+        return self._is_visible(comp) if comp else False
+
+    def _is_visible(self, comp: Tuple[QWidget, Optional[QAction], Dict[str, bool]]) -> bool:
+        return comp[1].isVisible() if comp[1] else comp[0].isVisible()
+
+    def _is_enabled(self, comp: Tuple[QWidget, Optional[QAction], Dict[str, bool]]) -> bool:
+        return comp[0].isEnabled()
+
+    def _is_read_only(self, comp: Tuple[QWidget, Optional[QAction], Dict[str, bool]]) -> bool:
+        return comp[0].isReadOnly() if self._supports_read_only(comp) else False
+
+    def _save_state(self, comp: Tuple[QWidget, Optional[QAction], Dict[str, bool]]):
+        comp[2]['v'] = self._is_visible(comp)
+        comp[2]['e'] = self._is_enabled(comp)
+        comp[2]['r'] = self._is_read_only(comp)
+
+    def list_visible_from_group(self, group_id: int) -> Set[str]:
+        ids = self.groups.get(group_id)
+        if ids:
+            return {cid for cid in ids if self.is_visible(cid)}
+
+    def disable_visible_from_groups(self, *groups):
+        if groups:
+            for group in groups:
+                ids = self.list_visible_from_group(group)
+
+                if ids:
+                    self.set_components_enabled(False, *ids)
+
+    def disable_visible(self):
+        self.set_components_enabled(False, *{cid for cid in self.components if self.is_visible(cid)})
+
+    def enable_visible(self):
+        self.set_components_enabled(True, *{cid for cid in self.components if self.is_visible(cid)})
+
+    def enable_visible_from_groups(self, *groups):
+        if groups:
+            for group in groups:
+                ids = self.list_visible_from_group(group)
+
+                if ids:
+                    self.set_components_enabled(True, *ids)
+
+    def save_state(self, cid: int, state_id: int):
+        comp = self.components.get(cid)
+
+        if comp:
+            self._save_state(comp)
+            states = self._saved_states.get(state_id)
+
+            if states is None:
+                states = {}
+                self._saved_states[state_id] = states
+
+            states[cid] = {**comp[2]}
+
+    def save_states(self, state_id: int, *ids, only_visible: bool = False):
+        for cid in (ids if ids else self.components):
+            if not only_visible or self.is_visible(cid):
+                self.save_state(cid, state_id)
+
+    def save_group_state(self, group_id: int, state_id: int):
+        ids = self.groups.get(group_id)
+
+        if ids:
+            self.save_states(state_id, *ids)
+
+    def save_groups_states(self, state_id: int, *group_ids):
+        if group_ids:
+            for group_id in group_ids:
+                self.save_group_state(group_id, state_id)
+
+    def _restore_state(self, comp: Tuple[QWidget, Optional[QAction], Dict[str, bool]], state: Dict[str, bool]):
+        self._save_state(comp)
+
+        if state['v'] != self._is_visible(comp):
+            self._set_visible(comp, state['v'])
+
+        if state['e'] != self._is_enabled(comp):
+            self._set_enabled(comp, state['e'])
+
+        if state['r'] != self._is_read_only(comp):
+            self._set_read_only(comp, state['r'])
+
+    def restore_group_state(self, group_id: int,  state_id: int):
+        states = self._saved_states.get(state_id)
+
+        if states:
+            ids = self.groups.get(group_id)
+
+            if ids:
+                for cid in ids:
+                    comp_state = states.get(cid)
+
+                    if comp_state:
+                        comp = self.components.get(cid)
+
+                        if comp:
+                            self._restore_state(comp, comp_state)
+
+    def restore_groups_state(self, state_id: int, *group_ids):
+        if group_ids:
+            for group_id in group_ids:
+                self.restore_group_state(group_id, state_id)
+
+    def restore_state(self, state_id: int):
+        state = self._saved_states.get(state_id)
+
+        if state:
+            for cid, cstate in state.items():
+                comp = self.components.get(cid)
+
+                if comp:
+                    self._restore_state(comp, cstate)
+
+            del self._saved_states[state_id]
+
+    def clear_saved_states(self):
+        self._saved_states.clear()
+
+    def remove_saved_state(self, state_id: int):
+        if state_id in self._saved_states:
+            del self._saved_states[state_id]
 
 
 class RadioButtonQt(QRadioButton):
@@ -27,9 +266,13 @@ class RadioButtonQt(QRadioButton):
         self.model = model
         self.model_parent = model_parent
         self.toggled.connect(self._set_checked)
+        self.setCursor(QCursor(Qt.PointingHandCursor))
 
         if model.icon_path:
-            self.setIcon(QIcon(model.icon_path))
+            if model.icon_path.startswith('/'):
+                self.setIcon(QIcon(model.icon_path))
+            else:
+                self.setIcon(QIcon.fromTheme(model.icon_path))
 
         if self.model.read_only:
             self.setAttribute(Qt.WA_TransparentForMouseEvents)
@@ -52,11 +295,16 @@ class CheckboxQt(QCheckBox):
         self.setToolTip(model.tooltip)
 
         if model.icon_path:
-            self.setIcon(QIcon(model.icon_path))
+            if model.icon_path.startswith('/'):
+                self.setIcon(QIcon(model.icon_path))
+            else:
+                self.setIcon(QIcon.fromTheme(model.icon_path))
 
         if model.read_only:
             self.setAttribute(Qt.WA_TransparentForMouseEvents)
             self.setFocusPolicy(Qt.NoFocus)
+        else:
+            self.setCursor(QCursor(Qt.PointingHandCursor))
 
     def _set_checked(self, state):
         checked = state == 2
@@ -189,6 +437,32 @@ class ComboSelectQt(QGroupBox):
         self.layout().addWidget(FormComboBoxQt(model), 0, 1)
 
 
+class QLineEditObserver(QLineEdit, ViewObserver):
+
+    def __init__(self, **kwargs):
+        super(QLineEditObserver, self).__init__(**kwargs)
+
+    def on_change(self, change: str):
+        if self.text() != change:
+            self.setText(change if change is not None else '')
+
+
+class QPlainTextEditObserver(QPlainTextEdit, ViewObserver):
+
+    def __init__(self, **kwargs):
+        super(QPlainTextEditObserver, self).__init__(**kwargs)
+
+    def on_change(self, change: str):
+        self.setText(change)
+
+    def setText(self, text: str):
+        if text != self.toPlainText():
+            self.setPlainText(text if text is not None else '')
+
+    def setCursorPosition(self, idx: int):
+        self.textCursor().setPosition(idx)
+
+
 class TextInputQt(QGroupBox):
 
     def __init__(self, model: TextInputComponent):
@@ -196,18 +470,25 @@ class TextInputQt(QGroupBox):
         self.model = model
         self.setLayout(QGridLayout())
         self.setStyleSheet('QGridLayout {margin-left: 0} QLabel { font-weight: bold}')
-        self.layout().addWidget(QLabel(model.label.capitalize() + ' :' if model.label else ''), 0, 0)
+
+        self.layout().addWidget(QLabel(model.get_label()), 0, 0)
 
         if self.model.max_width > 0:
             self.setMaximumWidth(self.model.max_width)
 
-        self.text_input = QLineEdit()
+        self.text_input = QLineEditObserver() if model.type == TextInputType.SINGLE_LINE else QPlainTextEditObserver()
 
         if model.only_int:
             self.text_input.setValidator(QIntValidator())
 
         if model.placeholder:
             self.text_input.setPlaceholderText(model.placeholder)
+
+        if model.min_width >= 0:
+            self.text_input.setMinimumWidth(model.min_width)
+
+        if model.min_height >= 0:
+            self.text_input.setMinimumHeight(model.min_height)
 
         if model.tooltip:
             self.text_input.setToolTip(model.tooltip)
@@ -218,10 +499,12 @@ class TextInputQt(QGroupBox):
 
         self.text_input.textChanged.connect(self._update_model)
 
+        self.model.observers.append(self.text_input)
         self.layout().addWidget(self.text_input, 0, 1)
 
-    def _update_model(self, text: str):
-        self.model.value = text
+    def _update_model(self, *args):
+        change = args[0] if args else self.text_input.toPlainText()
+        self.model.set_value(val=change, caller=self)
 
 
 class MultipleSelectQt(QGroupBox):
@@ -339,6 +622,7 @@ class FormMultipleSelectQt(QWidget):
                 help_icon = QLabel()
                 help_icon.setPixmap(pixmap_help)
                 help_icon.setToolTip(op.tooltip)
+                help_icon.setCursor(QCursor(Qt.PointingHandCursor))
                 widget.layout().addWidget(help_icon)
 
             self._layout.addWidget(widget, line, col)
@@ -359,26 +643,23 @@ class InputFilter(QLineEdit):
         super(InputFilter, self).__init__()
         self.on_key_press = on_key_press
         self.last_text = ''
-        self.typing = None
+        self.typing = QTimer()
+        self.typing.timeout.connect(self.notify_text_change)
 
     def notify_text_change(self):
-        time.sleep(2)
         text = self.text().strip()
 
         if text != self.last_text:
             self.last_text = text
             self.on_key_press()
 
-        self.typing = None
-
     def keyPressEvent(self, event):
         super(InputFilter, self).keyPressEvent(event)
 
-        if self.typing:
+        if self.typing.isActive():
             return
 
-        self.typing = Thread(target=self.notify_text_change, daemon=True)
-        self.typing.start()
+        self.typing.start(3000)
 
     def get_text(self):
         return self.last_text
@@ -450,29 +731,45 @@ class FormQt(QGroupBox):
         if model.spaces:
             self.layout().addRow(QLabel(), QLabel())
 
-        for c in model.components:
+        for idx, c in enumerate(model.components):
             if isinstance(c, TextInputComponent):
                 label, field = self._new_text_input(c)
                 self.layout().addRow(label, field)
             elif isinstance(c, SingleSelectComponent):
                 label = self._new_label(c)
-                field = FormComboBoxQt(c) if c.type == SelectViewType.COMBO else FormRadioSelectQt(c)
-                self.layout().addRow(label, self._wrap(field, c))
+                form = FormComboBoxQt(c) if c.type == SelectViewType.COMBO else FormRadioSelectQt(c)
+                field = self._wrap(form, c)
+                self.layout().addRow(label, field)
+            elif isinstance(c, RangeInputComponent):
+                label = self._new_label(c)
+                field = self._wrap(self._new_range_input(c), c)
+                self.layout().addRow(label, field)
             elif isinstance(c, FileChooserComponent):
                 label, field = self._new_file_chooser(c)
                 self.layout().addRow(label, field)
             elif isinstance(c, FormComponent):
-                self.layout().addRow(FormQt(c, self.i18n))
+                label, field = None,  FormQt(c, self.i18n)
+                self.layout().addRow(field)
             elif isinstance(c, TwoStateButtonComponent):
-                label = self._new_label(c)
-                self.layout().addRow(label, TwoStateButtonQt(c))
+                label, field = self._new_label(c), TwoStateButtonQt(c)
+                self.layout().addRow(label, field)
             elif isinstance(c, MultipleSelectComponent):
-                label = self._new_label(c)
-                self.layout().addRow(label, FormMultipleSelectQt(c))
+                label, field = self._new_label(c), FormMultipleSelectQt(c)
+                self.layout().addRow(label, field)
             elif isinstance(c, TextComponent):
-                self.layout().addRow(self._new_label(c), QWidget())
+                label, field = self._new_label(c), QWidget()
+                self.layout().addRow(label, field)
+            elif isinstance(c, RangeInputComponent):
+                label, field = self._new_label(c), self._new_range_input(c)
+                self.layout().addRow(label, field)
             else:
                 raise Exception('Unsupported component type {}'.format(c.__class__.__name__))
+
+            if label:  # to prevent C++ wrap errors
+                setattr(self, 'label_{}'.format(idx), label)
+
+            if field:  # to prevent C++ wrap errors
+                setattr(self, 'field_{}'.format(idx), field)
 
         if model.spaces:
             self.layout().addRow(QLabel(), QLabel())
@@ -487,8 +784,11 @@ class FormQt(QGroupBox):
         if hasattr(comp, 'size') and comp.size is not None:
             label_comp.setStyleSheet("QLabel { font-size: " + str(comp.size) + "px }")
 
-        attr = 'label' if hasattr(comp,'label') else 'value'
-        text = getattr(comp, attr)
+        if hasattr(comp, 'get_label'):
+            text = comp.get_label()
+        else:
+            attr = 'label' if hasattr(comp,'label') else 'value'
+            text = getattr(comp, attr)
 
         if text:
             if hasattr(comp, 'capitalize_label') and getattr(comp, 'capitalize_label'):
@@ -513,28 +813,35 @@ class FormQt(QGroupBox):
         return tip_icon
 
     def _new_text_input(self, c: TextInputComponent) -> Tuple[QLabel, QLineEdit]:
-        line_edit = QLineEdit()
+        view = QLineEditObserver() if c.type == TextInputType.SINGLE_LINE else QPlainTextEditObserver()
+
+        if c.min_width >= 0:
+            view.setMinimumWidth(c.min_width)
+
+        if c.min_height >= 0:
+            view.setMinimumHeight(c.min_height)
 
         if c.only_int:
-            line_edit.setValidator(QIntValidator())
+            view.setValidator(QIntValidator())
 
         if c.tooltip:
-            line_edit.setToolTip(c.tooltip)
+            view.setToolTip(c.tooltip)
 
         if c.placeholder:
-            line_edit.setPlaceholderText(c.placeholder)
+            view.setPlaceholderText(c.placeholder)
 
         if c.value:
-            line_edit.setText(str(c.value) if c.value else '')
-            line_edit.setCursorPosition(0)
+            view.setText(str(c.value) if c.value else '')
+            view.setCursorPosition(0)
 
         if c.read_only:
-            line_edit.setEnabled(False)
+            view.setEnabled(False)
 
         def update_model(text: str):
-            c.value = text
+            c.set_value(val=text, caller=view)
 
-        line_edit.textChanged.connect(update_model)
+        view.textChanged.connect(update_model)
+        c.observers.append(view)
 
         label = QWidget()
         label.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
@@ -544,12 +851,28 @@ class FormQt(QGroupBox):
         label.layout().addWidget(label_component)
 
         if label:
-            label_component.setText(c.label.capitalize())
+            label_component.setText(c.get_label())
 
             if c.tooltip:
                 label.layout().addWidget(self.gen_tip_icon(c.tooltip))
 
-        return label, self._wrap(line_edit, c)
+        return label, self._wrap(view, c)
+
+    def _new_range_input(self, model: RangeInputComponent) -> QSpinBox:
+        spinner = QSpinBox()
+        spinner.setMinimum(model.min)
+        spinner.setMaximum(model.max)
+        spinner.setSingleStep(model.step)
+        spinner.setValue(model.value if model.value is not None else model.min)
+
+        if model.tooltip:
+            spinner.setToolTip(model.tooltip)
+
+        def _update_value():
+            model.value = spinner.value()
+
+        spinner.valueChanged.connect(_update_value)
+        return spinner
 
     def _wrap(self, comp: QWidget, model: ViewComponent) -> QWidget:
         field_container = QWidget()
@@ -562,7 +885,7 @@ class FormQt(QGroupBox):
         return field_container
 
     def _new_file_chooser(self, c: FileChooserComponent) -> Tuple[QLabel, QLineEdit]:
-        chooser = QLineEdit()
+        chooser = QLineEditObserver()
         chooser.setReadOnly(True)
 
         if c.max_width > 0:
@@ -570,33 +893,36 @@ class FormQt(QGroupBox):
 
         if c.file_path:
             chooser.setText(c.file_path)
+            chooser.setCursorPosition(0)
 
+        c.observers.append(chooser)
         chooser.setPlaceholderText(self.i18n['view.components.file_chooser.placeholder'])
 
         def open_chooser(e):
-            options = QFileDialog.Options()
-
             if c.allowed_extensions:
                 exts = ';;'.join({'*.{}'.format(e) for e in c.allowed_extensions})
             else:
-                exts = '{}} (*);;'.format(self.i18n['all_files'].capitalize())
+                exts = '{} (*);;'.format(self.i18n['all_files'].capitalize())
 
             if c.file_path and os.path.isfile(c.file_path):
                 cur_path = c.file_path
+            elif c.search_path and os.path.exists(c.search_path):
+                cur_path = c.search_path
             else:
                 cur_path = str(Path.home())
 
-            file_path, _ = QFileDialog.getOpenFileName(self, self.i18n['file_chooser.title'], cur_path, exts, options=options)
+            if c.directory:
+                file_path = QFileDialog.getExistingDirectory(self, self.i18n['file_chooser.title'], cur_path, options=QFileDialog.Options())
+            else:
+                file_path, _ = QFileDialog.getOpenFileName(self, self.i18n['file_chooser.title'], cur_path, exts, options=QFileDialog.Options())
 
             if file_path:
-                c.file_path = file_path
-                chooser.setText(file_path)
+                c.set_file_path(file_path)
 
             chooser.setCursorPosition(0)
 
         def clean_path():
-            c.file_path = None
-            chooser.setText('')
+            c.set_file_path(None)
 
         chooser.mousePressEvent = open_chooser
 
@@ -663,6 +989,8 @@ def to_widget(comp: ViewComponent, i18n: I18n, parent: QWidget = None) -> QWidge
         return MultipleSelectQt(comp, None)
     elif isinstance(comp, TextInputComponent):
         return TextInputQt(comp)
+    elif isinstance(comp, RangeInputComponent):
+        return RangeInputQt(comp)
     elif isinstance(comp, FormComponent):
         return FormQt(comp, i18n)
     elif isinstance(comp, TabGroupComponent):
@@ -683,3 +1011,32 @@ def to_widget(comp: ViewComponent, i18n: I18n, parent: QWidget = None) -> QWidge
         return new_spacer()
     else:
         raise Exception("Cannot render instances of " + comp.__class__.__name__)
+
+
+class RangeInputQt(QGroupBox):
+
+    def __init__(self, model: RangeInputComponent):
+        super(RangeInputQt, self).__init__()
+        self.model = model
+        self.setLayout(QGridLayout())
+        self.setStyleSheet('QGridLayout {margin-left: 0} QLabel { font-weight: bold}')
+        self.layout().addWidget(QLabel(model.label.capitalize() + ' :' if model.label else ''), 0, 0)
+
+        if self.model.max_width > 0:
+            self.setMaximumWidth(self.model.max_width)
+
+        self.spinner = QSpinBox()
+        self.spinner.setMinimum(model.min)
+        self.spinner.setMaximum(model.max)
+        self.spinner.setSingleStep(model.step)
+        self.spinner.setValue(model.value if model.value is not None else model.min)
+
+        if model.tooltip:
+            self.spinner.setToolTip(model.tooltip)
+
+        self.layout().addWidget(self.spinner, 0, 1)
+
+        self.spinner.valueChanged.connect(self._update_value)
+
+    def _update_value(self):
+        self.model.value = self.spinner.value()

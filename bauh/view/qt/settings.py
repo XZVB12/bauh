@@ -2,6 +2,7 @@ import gc
 from io import StringIO
 
 from PyQt5.QtCore import QSize, Qt, QCoreApplication
+from PyQt5.QtGui import QCursor
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QToolBar, QSizePolicy, QPushButton
 
 from bauh import __app_name__
@@ -18,7 +19,7 @@ from bauh.view.util.translation import I18n
 class SettingsWindow(QWidget):
 
     def __init__(self, manager: SoftwareManager, i18n: I18n, screen_size: QSize, window: QWidget, parent: QWidget = None):
-        super(SettingsWindow, self).__init__(parent=parent)
+        super(SettingsWindow, self).__init__(parent=parent, flags=Qt.CustomizeWindowHint | Qt.WindowTitleHint)
         self.setWindowTitle('{} ({})'.format(i18n['settings'].capitalize(), __app_name__))
         self.setLayout(QVBoxLayout())
         self.manager = manager
@@ -36,6 +37,7 @@ class SettingsWindow(QWidget):
         action_bar.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
 
         bt_close = QPushButton()
+        bt_close.setCursor(QCursor(Qt.PointingHandCursor))
         bt_close.setText(self.i18n['close'].capitalize())
         bt_close.clicked.connect(lambda: self.close())
         action_bar.addWidget(bt_close)
@@ -43,6 +45,7 @@ class SettingsWindow(QWidget):
         action_bar.addWidget(new_spacer())
 
         bt_change = QPushButton()
+        bt_change.setCursor(QCursor(Qt.PointingHandCursor))
         bt_change.setStyleSheet(css.OK_BUTTON)
         bt_change.setText(self.i18n['change'].capitalize())
         bt_change.clicked.connect(self._save_settings)
@@ -96,7 +99,7 @@ class SettingsWindow(QWidget):
                     self.window.update_custom_actions()
                     self.window.verify_warnings()
                     self.window.types_changed = True
-                    self.window.refresh_packages()
+                    self.window.begin_refresh_packages()
                 self.close()
         else:
             msg = StringIO()
